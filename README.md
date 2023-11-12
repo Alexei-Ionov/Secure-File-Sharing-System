@@ -16,6 +16,8 @@ Partner 1 SID: 3036729466
 
 Partner 2 SID (if applicable): 
 
+Team Name: kool-kaa & k.porzington
+
 Also add a link to this repo below (should start with https://github.com/cs161-students/).
 
 Link to this Github repo:
