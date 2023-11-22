@@ -140,9 +140,10 @@ type User struct {
 	// begins with a lowercase letter).
 }
 type RSA_Invite struct {
-	Invitation_UUID     userlib.UUID
-	Invitation_hmac_key []byte
-	Invitation_dk       []byte
+	IUUID userlib.UUID
+	Ikeys []byte //will combine both hmac and symm dk here
+	// Invitation_hmac_key []byte
+	// Invitation_dk       []byte
 }
 type Invitation struct {
 	File_UUID        userlib.UUID
@@ -343,7 +344,8 @@ func GetFilePtrOwner(File_PTR_uuid userlib.UUID, file_decrypt_key []byte, hmac_k
 	return file_ptr, nil
 }
 
-func GetFilePtr(userdata *User, mapval MapVal) (res File_PTR, dk []byte, hkey []byte, err error) {
+func GetFilePtr(userdata *User, File_PTR_uuid userlib.UUID) (res File_PTR, dk []byte, hkey []byte, err error) {
+	mapval := userdata.Files_Access[File_PTR_uuid]
 
 	symm_decrypt_key := mapval.Symmetric_decrypt_key
 	invitation_uuid := mapval.InvitationUUID
@@ -365,26 +367,39 @@ func GetFilePtr(userdata *User, mapval MapVal) (res File_PTR, dk []byte, hkey []
 	}
 
 	encrypted_invitation_struct := total_invitation_struct[:len(total_invitation_struct)-64]
-
-	// PKEDec(dk PKEDecKey, ciphertext []byte) (plaintext []byte, err error)
 	marshalled_invitation_struct := userlib.SymDec(symm_decrypt_key, encrypted_invitation_struct)
+
 	var invitation_struct Invitation
 	err = json.Unmarshal(marshalled_invitation_struct, &invitation_struct)
 	if err != nil {
 		return file_ptr, nil, nil, err
 	}
 
-	encrypted_file_ptr, ok := userlib.DatastoreGet(invitation_struct.File_UUID)
+	total_file_ptr, ok := userlib.DatastoreGet(invitation_struct.File_UUID)
 	if !ok {
 		return file_ptr, nil, nil, errors.New(strings.ToTitle("Trouble finding file ptr..."))
 	}
 	file_dk := invitation_struct.File_decrypt_key
-	marshalled_file_ptr := userlib.SymDec(file_dk, encrypted_file_ptr)
-	err = json.Unmarshal(marshalled_file_ptr, &file_ptr)
+	file_hmac_key := invitation_struct.File_HMAC_key
+
+	encrypted_file_ptr := total_file_ptr[:len(total_file_ptr)-64]
+	integrity, err = CheckNodeIntegrity(file_hmac_key, total_file_ptr)
 	if err != nil {
 		return file_ptr, nil, nil, err
 	}
-	return file_ptr, file_dk, invitation_struct.File_HMAC_key, nil
+	if !integrity {
+		return file_ptr, nil, nil, errors.New(strings.ToTitle("file ptr has been tampered with"))
+	}
+
+	marshalled_file_ptr := userlib.SymDec(file_dk, encrypted_file_ptr)
+
+	var ret_file_ptr File_PTR
+	err = json.Unmarshal(marshalled_file_ptr, &ret_file_ptr)
+	if err != nil {
+
+		return file_ptr, nil, nil, err
+	}
+	return ret_file_ptr, file_dk, file_hmac_key, nil
 }
 
 func CreateInvitationStruct(filename string, userdata *User, recipient string) (err error) {
@@ -622,13 +637,12 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		new_file_node.Contents = content
 		new_file_node.Next = uuid.New()
 
-		total_file_ptr, err = UpdateFilePtrTail(hmac_key, file_ptr, symm_decrypt_key, new_file_node.Next)
-		userlib.DatastoreSet(File_PTR_uuid, total_file_ptr)
+		err = AddNode(new_file_node, file_ptr, symm_decrypt_key, hmac_key)
 		if err != nil {
 			return err
 		}
 
-		err = AddNode(new_file_node, file_ptr, symm_decrypt_key, hmac_key)
+		err = UpdateFilePtrTail(hmac_key, file_ptr, symm_decrypt_key, new_file_node.Next, File_PTR_uuid)
 		if err != nil {
 			return err
 		}
@@ -636,7 +650,7 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		//we created a new struct with contents and we overwrote the stuff that we previously at the file ptr Head with this struct
 	} else { //user has only has ACCESS
 
-		file_ptr, file_decrypt_key, hmac_key, err := GetFilePtr(userdata, userdata.Files_Access[File_PTR_uuid])
+		file_ptr, file_decrypt_key, hmac_key, err := GetFilePtr(userdata, File_PTR_uuid)
 		total_file_ptr, found := userlib.DatastoreGet(File_PTR_uuid)
 		if !found {
 			return errors.New(strings.ToTitle("Couldn't find file PTR"))
@@ -651,12 +665,13 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		var new_file_node File_Node
 		new_file_node.Contents = content
 		new_file_node.Next = uuid.New()
-		total_file_ptr, err = UpdateFilePtrTail(hmac_key, file_ptr, file_decrypt_key, new_file_node.Next)
+
+		err = AddNode(new_file_node, file_ptr, file_decrypt_key, hmac_key)
 		if err != nil {
 			return err
 		}
-		userlib.DatastoreSet(File_PTR_uuid, total_file_ptr)
-		err = AddNode(new_file_node, file_ptr, file_decrypt_key, hmac_key)
+
+		err = UpdateFilePtrTail(hmac_key, file_ptr, file_decrypt_key, new_file_node.Next, File_PTR_uuid)
 		if err != nil {
 			return err
 		}
@@ -680,33 +695,36 @@ func AddNode(new_file_node File_Node, file_ptr File_PTR, file_decrypt_key []byte
 	return nil
 }
 
-func UpdateFilePtrTail(hmac_key []byte, file_ptr File_PTR, file_decrypt_key []byte, new_uuid userlib.UUID) (res []byte, err error) {
+func UpdateFilePtrTail(hmac_key []byte, file_ptr File_PTR, file_decrypt_key []byte, new_uuid userlib.UUID, File_PTR_uuid userlib.UUID) (err error) {
 	file_ptr.Tail = new_uuid //update the tail pointer
 	marshalled_file_ptr, err := json.Marshal(file_ptr)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	iv := userlib.RandomBytes(16)
 	encypted_file_ptr := userlib.SymEnc(file_decrypt_key, iv, marshalled_file_ptr)
-	if err != nil {
-		return nil, err
-	}
 	hmac_file_ptr, err := userlib.HMACEval(hmac_key, encypted_file_ptr)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	total := append(encypted_file_ptr, hmac_file_ptr...)
-	return total, nil
+	total_ptr := append(encypted_file_ptr, hmac_file_ptr...)
+	userlib.DatastoreSet(File_PTR_uuid, total_ptr)
+	return nil
 }
 
 func (userdata *User) AppendToFile(filename string, content []byte) error {
 	var err error
+	File_PTR_uuid, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	if err != nil {
+		return err
+	}
 	userdata, err = GetUpdatedUser(userdata)
 	if err != nil {
 		return err
 	}
-	File_PTR_uuid, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+
 	file_ptr, file_decrypt_key, hmac_key, err := GetFilePtrMaster(userdata, filename)
+
 	if err != nil {
 		return err
 	}
@@ -716,13 +734,20 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	new_file_node.Next = uuid.New()
 
 	err = AddNode(new_file_node, file_ptr, file_decrypt_key, hmac_key)
+
 	if err != nil {
 		return err
 	}
+	userlib.DebugMsg("file ptr head before update %s, file ptr tail before update: %s", file_ptr.Head, file_ptr.Tail)
 
 	//now i need to marshall and re-encrypt the file-ptr
-	total_ptr, err := UpdateFilePtrTail(hmac_key, file_ptr, file_decrypt_key, new_file_node.Next)
-	userlib.DatastoreSet(File_PTR_uuid, total_ptr)
+	err = UpdateFilePtrTail(hmac_key, file_ptr, file_decrypt_key, new_file_node.Next, File_PTR_uuid)
+	if err != nil {
+		return err
+	}
+	file_ptr, file_decrypt_key, hmac_key, err = GetFilePtrMaster(userdata, filename)
+	userlib.DebugMsg("file ptr head after update %s, file ptr tail after update: %s", file_ptr.Head, file_ptr.Tail)
+
 	return nil
 }
 func GetFilePtrMaster(userdata *User, filename string) (ptr File_PTR, dk []byte, hkey []byte, err error) {
@@ -754,7 +779,10 @@ func GetFilePtrMaster(userdata *User, filename string) (ptr File_PTR, dk []byte,
 		}
 
 	} else {
-		file_ptr, file_decrypt_key, hmac_key, err = GetFilePtr(userdata, userdata.Files_Access[File_PTR_uuid])
+		file_ptr, file_decrypt_key, hmac_key, err = GetFilePtr(userdata, File_PTR_uuid)
+		if err != nil {
+			return file_ptr, nil, nil, err
+		}
 	}
 	return file_ptr, file_decrypt_key, hmac_key, nil
 
@@ -859,26 +887,20 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 
 		//now i need to create an RSA struct
 		var rsa_invite RSA_Invite
-		rsa_invite.Invitation_UUID = invitation_struct_uuid
-		rsa_invite.Invitation_dk = symm_decrypt_invitation_key
-		rsa_invite.Invitation_hmac_key = hmac_invitation_key
-
+		rsa_invite.IUUID = invitation_struct_uuid
+		rsa_invite.Ikeys = append(symm_decrypt_invitation_key, hmac_invitation_key...)
+		// rsa_invite.Invitation_dk = symm_decrypt_invitation_key
+		// rsa_invite.Invitation_hmac_key = hmac_invitation_key
 		marshalled_rsa_invite, err := json.Marshal(rsa_invite)
 		if err != nil {
 			return buffer_uuid, err
 		}
-		userlib.DebugMsg("length of marhsalled rsa invite: %d", len(marshalled_rsa_invite))
-
-		// PKEEnc(ek PKEEncKey, plaintext []byte) (ciphertext []byte, err error)
 
 		encrypted_rsa_invite, err := userlib.PKEEnc(recipient_RSA_key, marshalled_rsa_invite)
 		// DSSign(sk DSSignKey, msg []byte) (sig []byte, err error)
 		if err != nil {
-			userlib.DebugMsg("PASS")
-
 			return buffer_uuid, err
 		}
-		userlib.DebugMsg("length of encrypted rsa invite: %d", len(encrypted_rsa_invite))
 
 		digital_sig, err := userlib.DSSign(userdata.Pds_key, encrypted_rsa_invite)
 		if err != nil {
@@ -896,9 +918,11 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		// HMAC_key []byte
 
 		var rsa_invite RSA_Invite
-		rsa_invite.Invitation_UUID = mapVal.InvitationUUID
-		rsa_invite.Invitation_dk = mapVal.Symmetric_decrypt_key
-		rsa_invite.Invitation_hmac_key = mapVal.HMAC_key
+		rsa_invite.IUUID = mapVal.InvitationUUID
+		rsa_invite.Ikeys = append(mapVal.Symmetric_decrypt_key, mapVal.HMAC_key...)
+
+		// rsa_invite.Invitation_dk = mapVal.Symmetric_decrypt_key
+		// rsa_invite.Invitation_hmac_key = mapVal.HMAC_key
 
 		marshalled_rsa_invite, err := json.Marshal(rsa_invite)
 		if err != nil {
@@ -924,10 +948,12 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	var err error
 	userdata, err = GetUpdatedUser(userdata)
 	if err != nil {
+		userlib.DebugMsg("PASS1")
 		return err
 	}
 	File_PTR_uuid, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
 	if err != nil {
+		userlib.DebugMsg("PASS2")
 		return err
 	}
 	_, okOwn := userdata.Files_Owned[File_PTR_uuid]
@@ -939,7 +965,6 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	if !ok {
 		return errors.New(strings.ToTitle("Trouble retrieving rsa struct from DS"))
 	}
-	userlib.DebugMsg("length of total rsa: %d", len(total_rsa))
 	// DSVerify(vk DSVerifyKey, msg []byte, sig []byte) (err error)
 	// Uses the RSA public (verification) key vk to verify that the signature sig on the message msg is valid. If the signature is valid, err is nil; otherwise, err is not nil.
 	public_ds_key, ok := userlib.KeystoreGet(senderUsername + "DS")
@@ -948,7 +973,6 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	}
 	sig := total_rsa[len(total_rsa)-256:]
 	encrypted_invite := total_rsa[:len(total_rsa)-256]
-	userlib.DebugMsg("length of encrypted invite: %d", len(encrypted_invite))
 	err = userlib.DSVerify(public_ds_key, encrypted_invite, sig)
 	if err != nil {
 		return err
@@ -956,7 +980,6 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	//authenticated, now we can actaully decrypt the rsa encrypted struct
 	marshalled_invite, err := userlib.PKEDec(userdata.PRSA_key, encrypted_invite)
 	if err != nil {
-		userlib.DebugMsg("error here 2: %s")
 		return err
 	}
 	var rsa_invite RSA_Invite
@@ -964,14 +987,17 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	if err != nil {
 		return err
 	}
-	total_invite, ok := userlib.DatastoreGet(rsa_invite.Invitation_UUID)
+	total_invite, ok := userlib.DatastoreGet(rsa_invite.IUUID)
 	if !ok {
 		return errors.New(strings.ToTitle("Trouble retrieving invitation struct from DS"))
 	}
 
 	/// do i need to check the integrity of the invitation struct?
-	integrity, err := CheckNodeIntegrity(rsa_invite.Invitation_hmac_key, total_invite)
+	invitation_symm_key := rsa_invite.Ikeys[:16]
+	invitation_hmac_key := rsa_invite.Ikeys[16:]
+	integrity, err := CheckNodeIntegrity(invitation_hmac_key, total_invite)
 	if err != nil {
+
 		return err
 	}
 	if !integrity {
@@ -979,11 +1005,12 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	}
 
 	var mapVal MapVal
-	mapVal.HMAC_key = rsa_invite.Invitation_hmac_key
-	mapVal.InvitationUUID = rsa_invite.Invitation_UUID
-	mapVal.Symmetric_decrypt_key = rsa_invite.Invitation_dk
+	mapVal.HMAC_key = invitation_hmac_key
+	mapVal.InvitationUUID = rsa_invite.IUUID
+	mapVal.Symmetric_decrypt_key = invitation_symm_key
 	userdata.Files_Access[File_PTR_uuid] = mapVal
 	UpdateUser(userdata)
+
 	return nil
 }
 
