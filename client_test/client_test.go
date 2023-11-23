@@ -146,6 +146,9 @@ var _ = Describe("Client Tests", func() {
 			err = bob.AppendToFile(bobFile, []byte(contentTwo))
 			Expect(err).To(BeNil())
 
+			alicecontent, err := aliceDesktop.LoadFile(aliceFile)
+			userlib.DebugMsg("after bob append appending to file [alice pov] %s", alicecontent)
+
 			userlib.DebugMsg("aliceDesktop appending to file %s, content: %s", aliceFile, contentThree)
 			err = aliceDesktop.AppendToFile(aliceFile, []byte(contentThree))
 			Expect(err).To(BeNil())
