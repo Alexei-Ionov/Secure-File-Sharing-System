@@ -18,16 +18,20 @@ package client
 // integration tests (client_test.go). In other words, the "client." in front is no longer needed.
 
 import (
-	userlib "github.com/cs161-staff/project2-userlib"
 	"testing"
-)
 
-import (
+	userlib "github.com/cs161-staff/project2-userlib"
+
 	_ "encoding/hex"
+
 	_ "errors"
+
 	. "github.com/onsi/ginkgo/v2"
+
 	. "github.com/onsi/gomega"
+
 	_ "strconv"
+
 	_ "strings"
 )
 

@@ -254,15 +254,19 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 }
 
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	var hashed_username []byte = userlib.Hash([]byte(username))[:16]
-	u, err := uuid.FromBytes(hashed_username)
+	//first check to see if username even  exists in the first place using keystore
+	_, ok := userlib.KeystoreGet(username + "RSA")
+	if !ok {
+		return nil, errors.New(strings.ToTitle("Username doesn't exist"))
+	}
+	u, err := uuid.FromBytes(userlib.Hash([]byte(username))[:16])
 	if err != nil {
 		return nil, err
 	}
 	var verification_struct Verification
 	data, found := userlib.DatastoreGet(u)
 	if !found {
-		return nil, err
+		return nil, errors.New(strings.ToTitle("Failed to retrieve from DS or username "))
 	}
 	err = json.Unmarshal(data, &verification_struct)
 	if err != nil {
@@ -288,7 +292,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if !found {
 		return nil, errors.New(strings.ToTitle("Couldn't find user"))
 	}
-	if len(encrypted_total_user) <= 65 {
+	if len(encrypted_total_user) < 65 {
 		return nil, errors.New(strings.ToTitle("User data has been tampered with"))
 	}
 
