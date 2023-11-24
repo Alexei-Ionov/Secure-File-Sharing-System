@@ -967,6 +967,10 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	if !ok {
 		return errors.New(strings.ToTitle("Trouble retrieving rsa struct from DS"))
 	}
+
+	if len(total_rsa) < 265 {
+		return errors.New(strings.ToTitle("Tampering with rsa invite struct. signature is gone..."))
+	}
 	// DSVerify(vk DSVerifyKey, msg []byte, sig []byte) (err error)
 	// Uses the RSA public (verification) key vk to verify that the signature sig on the message msg is valid. If the signature is valid, err is nil; otherwise, err is not nil.
 	public_ds_key, ok := userlib.KeystoreGet(senderUsername + "DS")
