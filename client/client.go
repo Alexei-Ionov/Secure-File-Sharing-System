@@ -112,7 +112,7 @@ type MapVal struct {
 }
 
 type OwnMap struct {
-	Shared_with     []string
+	Shared_with     string
 	Invitation_UUID userlib.UUID
 }
 
@@ -122,7 +122,7 @@ type OwnMap struct {
 type User struct {
 	Username     string
 	Salt         []byte
-	Files_Owned  map[userlib.UUID]OwnMap
+	Files_Owned  map[userlib.UUID][]OwnMap
 	Files_Access map[userlib.UUID]MapVal
 	// PKEKeyGen() (PKEEncKey, PKEDecKey, err error)
 	// DSKeyGen() (DSSignKey, DSVerifyKey, err error)
@@ -199,7 +199,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	user.Username = username
 	user.Salt = userlib.RandomBytes(16)
 	user.MasterKey = userlib.Hash([]byte(password + username + password))[:16]
-	user.Files_Owned = make(map[userlib.UUID]OwnMap)
+	user.Files_Owned = make(map[userlib.UUID][]OwnMap)
 	user.Files_Access = make(map[userlib.UUID]MapVal)
 	user.UserUUID = user_uuid
 
@@ -451,13 +451,17 @@ func CreateInvitationStruct(filename string, userdata *User, recipient string) (
 	total_invitation := append(encrypted_invitation, hmac_invitation...)
 
 	invitation_uuid := uuid.New()
+
 	var ownMap OwnMap
 	ownMap.Invitation_UUID = invitation_uuid
-	ownMap.Shared_with = []string{}
-	ownMap.Shared_with = append(ownMap.Shared_with, recipient)
-	userdata.Files_Owned[File_PTR_local] = ownMap
+	ownMap.Shared_with = recipient
 
-	UpdateUser(userdata)
+	userdata.Files_Owned[File_PTR_local] = append(userdata.Files_Owned[File_PTR_local], ownMap)
+
+	err = UpdateUser(userdata)
+	if err != nil {
+		return err
+	}
 	userlib.DatastoreSet(invitation_uuid, total_invitation)
 
 	return nil
@@ -592,14 +596,11 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		userlib.DatastoreSet(File_PTR_local, total_ptr)
 		userlib.DatastoreSet(new_file_node_uuid, total_node)
 
-		buffer_uuid := uuid.Nil
-
-		var ownMap OwnMap
-		ownMap.Invitation_UUID = buffer_uuid
-		ownMap.Shared_with = []string{}
-		userdata.Files_Owned[File_PTR_local] = ownMap
-
-		UpdateUser(userdata)
+		userdata.Files_Owned[File_PTR_local] = nil
+		err = UpdateUser(userdata)
+		if err != nil {
+			return err
+		}
 
 	} else if okOwn {
 		//owner of the file but file is already created!
@@ -635,16 +636,11 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 			return err
 		}
 
-		var new_file_node File_Node
-		new_file_node.Contents = content
-		new_file_node.Next = uuid.New()
-
-		err = AddNode(new_file_node, file_ptr, symm_decrypt_key, hmac_key)
+		new_tail_uuid, err := StoreFileHelper(content, symm_decrypt_key, hmac_key, file_ptr.Head)
 		if err != nil {
 			return err
 		}
-
-		err = UpdateFilePtrTail(hmac_key, file_ptr, symm_decrypt_key, new_file_node.Next, File_PTR_local)
+		err = UpdateFilePtrTail(hmac_key, file_ptr, symm_decrypt_key, new_tail_uuid, File_PTR_local)
 		if err != nil {
 			return err
 		}
@@ -667,15 +663,12 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		if !integrity {
 			return errors.New(strings.ToTitle("File ptr has been tampered with..."))
 		}
-		var new_file_node File_Node
-		new_file_node.Contents = content
-		new_file_node.Next = uuid.New()
 
-		err = AddNode(new_file_node, file_ptr, file_decrypt_key, hmac_key)
+		new_tail_uuid, err := StoreFileHelper(content, file_decrypt_key, hmac_key, file_ptr.Head)
 		if err != nil {
 			return err
 		}
-		err = UpdateFilePtrTail(hmac_key, file_ptr, file_decrypt_key, new_file_node.Next, File_PTR_uuid)
+		err = UpdateFilePtrTail(hmac_key, file_ptr, file_decrypt_key, new_tail_uuid, File_PTR_uuid)
 		if err != nil {
 			return err
 		}
@@ -683,8 +676,37 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	return nil
 }
 
+func StoreFileHelper(content []byte, file_decrypt_key []byte, hmac_key []byte, file_ptr_head userlib.UUID) (next_tail_uuid userlib.UUID, err error) {
+	var new_file_node File_Node
+	new_file_node.Contents = content
+	new_file_node.Next = uuid.New()
+
+	buffer_uuid := uuid.Nil
+
+	marshalled_file_node, err := json.Marshal(new_file_node)
+	if err != nil {
+		return buffer_uuid, err
+	}
+	iv := userlib.RandomBytes(16)
+	encrypted_file_node := userlib.SymEnc(file_decrypt_key, iv, marshalled_file_node)
+	if err != nil {
+		return buffer_uuid, err
+	}
+	hmac_file_node, err := userlib.HMACEval(hmac_key, encrypted_file_node)
+	if err != nil {
+		return buffer_uuid, err
+	}
+	total_file_node := append(encrypted_file_node, hmac_file_node...)
+	userlib.DatastoreSet(file_ptr_head, total_file_node)
+	return new_file_node.Next, nil
+
+}
+
 func AddNode(new_file_node File_Node, file_ptr File_PTR, file_decrypt_key []byte, hmac_key []byte) (err error) {
 	marshalled_file_node, err := json.Marshal(new_file_node)
+	if err != nil {
+		return err
+	}
 	iv := userlib.RandomBytes(16)
 	encrypted_file_node := userlib.SymEnc(file_decrypt_key, iv, marshalled_file_node)
 	if err != nil {
@@ -874,12 +896,19 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return buffer_uuid, errors.New(strings.ToTitle("User doesn't have sharing priveldges!"))
 	} else if okOwn {
 		//undefined behavior: creating invite to someone who already has access/or been revoked
+
 		err := CreateInvitationStruct(filename, userdata, recipientUsername)
 		if err != nil {
 			return buffer_uuid, err
 		}
+		var invitation_struct_uuid userlib.UUID
+		for _, curr_map := range userdata.Files_Owned[File_PTR_local] {
+			if curr_map.Shared_with == recipientUsername {
+				invitation_struct_uuid = curr_map.Invitation_UUID
+				break
+			}
 
-		invitation_struct_uuid := userdata.Files_Owned[File_PTR_local].Invitation_UUID
+		}
 
 		symm_decrypt_invitation_key, err := userlib.HashKDF(userdata.MasterKey, []byte(filename+"symm"+"share"+recipientUsername))
 		if err != nil {
@@ -953,13 +982,13 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 
 		return err
 	}
-	File_PTR_uuid, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	File_PTR_local, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
 	if err != nil {
 
 		return err
 	}
-	_, okOwn := userdata.Files_Owned[File_PTR_uuid]
-	_, okAccess := userdata.Files_Access[File_PTR_uuid]
+	_, okOwn := userdata.Files_Owned[File_PTR_local]
+	_, okAccess := userdata.Files_Access[File_PTR_local]
 	if okOwn || okAccess {
 		return errors.New(strings.ToTitle("Filename already exists in namespace"))
 	}
@@ -1003,7 +1032,6 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	invitation_hmac_key := rsa_invite.Ikeys[16:]
 	integrity, err := CheckNodeIntegrity(invitation_hmac_key, total_invite)
 	if err != nil {
-
 		return err
 	}
 	if !integrity {
@@ -1014,8 +1042,11 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	mapVal.HMAC_key = invitation_hmac_key
 	mapVal.InvitationUUID = rsa_invite.IUUID
 	mapVal.Symmetric_decrypt_key = invitation_symm_key
-	userdata.Files_Access[File_PTR_uuid] = mapVal
-	UpdateUser(userdata)
+	userdata.Files_Access[File_PTR_local] = mapVal
+	err = UpdateUser(userdata)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -1033,14 +1064,16 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	if err != nil {
 		return err
 	}
-	ownMap, okOwn := userdata.Files_Owned[File_PTR_local]
+	maps_list, okOwn := userdata.Files_Owned[File_PTR_local]
 	if !okOwn {
 		return errors.New(strings.ToTitle("Trying to revoke access yet file isn't in namespace of user or user isn't owner of file..."))
 	}
-	shared_with := ownMap.Shared_with
+
 	seen := false
-	for _, user := range shared_with {
-		if user == recipientUsername {
+	var invitation_uuid userlib.UUID
+	for _, curr_map := range maps_list {
+		if curr_map.Shared_with == recipientUsername {
+			invitation_uuid = curr_map.Invitation_UUID
 			seen = true
 			break
 		}
@@ -1049,7 +1082,6 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return errors.New(strings.ToTitle("Revoked user is not in owner's namespace"))
 	}
 
-	invitation_uuid := ownMap.Invitation_UUID
 	random_bytes := userlib.RandomBytes(16)
 	userlib.DatastoreSet(invitation_uuid, random_bytes)
 	return nil
