@@ -362,6 +362,18 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 
 		})
+		Specify("Basic Test: tampered DSMap", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			dsMap := userlib.DatastoreGetMap()
+			for key := range dsMap {
+				dsMap[key] = []byte("random stuff")
+			}
+			aliceDesktop, err = client.GetUser("alice", defaultPassword)
+			Expect(err).ToNot(BeNil())
+
+		})
 	})
 	/*
 
@@ -544,6 +556,29 @@ var _ = Describe("Client Tests", func() {
 
 			_, err := alice.LoadFile("aliceFile")
 			Expect(err).To(BeNil())
+
+		})
+
+		Specify("Basic Test: tampered DSMap", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file with empty file name without content (storing): %s", emptyString)
+			err = alice.StoreFile("aliceFile", []byte(emptyString))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file with empty file name without content (appending): %s", emptyString)
+			err = alice.AppendToFile("aliceFile", []byte(emptyString))
+			Expect(err).To(BeNil())
+
+			dsMap := userlib.DatastoreGetMap()
+			for key := range dsMap {
+				dsMap[key] = []byte("random stuff")
+			}
+
+			_, err := alice.LoadFile("aliceFile")
+			Expect(err).ToNot(BeNil())
 
 		})
 
@@ -1239,7 +1274,6 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 
 		})
-
 		Specify("Testing that users with access still have access after others get revoked", func() {
 
 			userlib.DebugMsg("Initializing user Alice.")
@@ -1302,6 +1336,71 @@ var _ = Describe("Client Tests", func() {
 			content, err = charles.LoadFile(charlesFile)
 			Expect(err).To(BeNil())
 			Expect(content).To(Equal([]byte(contentOne + "hey there" + "charles")))
+
+		})
+
+		Specify("Basic Test for accept : tampered DSMap", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file with empty file name without content (storing): %s", emptyString)
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file with empty file name without content (appending): %s", emptyString)
+			err = alice.AppendToFile(aliceFile, []byte(contentThree))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Initializing user bob.")
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("alice creates invite to bob")
+			invite, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+
+			dsMap := userlib.DatastoreGetMap()
+			for key := range dsMap {
+				dsMap[key] = []byte("random stuff")
+			}
+
+			err = bob.AcceptInvitation("alice", invite, "bobfile")
+			Expect(err).ToNot(BeNil())
+
+		})
+		Specify("Basic Test for revoke: tampered DSMap", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file with empty file name without content (storing): %s", emptyString)
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file with empty file name without content (appending): %s", emptyString)
+			err = alice.AppendToFile(aliceFile, []byte(contentThree))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Initializing user bob.")
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("alice creates invite to bob")
+			invite, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+
+			err = bob.AcceptInvitation("alice", invite, "bobfile")
+			Expect(err).ToNot(BeNil())
+
+			dsMap := userlib.DatastoreGetMap()
+			for key := range dsMap {
+				dsMap[key] = []byte("random stuff")
+			}
+
+			userlib.DebugMsg("alice revokes bob's access")
+			err = alice.RevokeAccess(aliceFile, "bob")
+			Expect(err).ToNot(BeNil())
 
 		})
 	})
