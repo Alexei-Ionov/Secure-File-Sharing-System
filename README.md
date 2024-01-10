@@ -1,24 +1,5 @@
-# Project 2 Starter Code
+This repository contains the code for a secure file sharing system!
 
-This repository contains the starter code for Project 2!
+This is a file sharing and access control system that uses cryptographic techniques such as RSA OAEP, HMACS, Hashes, PRNGS, Digital Signatures, and more to ensure security of files and user actions. It's data storage and retrieval system allows for bandwidth-optimized sharing of uncompromised and integrious information! Moreover, this system was designed to incoporate a secure communication channel for file invitations between users and features an access revocation system for file owners. 
 
-For comprehensive documentation, see the Project 2 Spec (https://cs161.org/proj2/).
-
-Write your implementation in `client/client.go` and your integration tests in `client_test/client_test.go`. Optionally, you can also use `client/client_unittest.go` to write unit tests (e.g: to test your helper functions).
-
-To test your implementation, run `go test -v` inside of the `client_test` directory. This will run all tests in both `client/client_unittest.go` and `client_test/client_test.go`.
-
-## Project Members
-
-Fill in this section with the student IDs of all the members in your project group.
-
-Partner 1 SID: 3036729466
-
-Partner 2 SID (if applicable): 
-
-Team Name: kool-kaa & k.porzington
-
-Also add a link to this repo below (should start with https://github.com/cs161-students/).
-
-Link to this Github repo:
-https://github.com/cs161-students/fa23-proj2-kool-kaa-k-porzington
+This project also features an extensive testing suite under the "client_unittest.go" file.
